@@ -1,0 +1,231 @@
+---
+Description: Test CFN stack for ASG
+
+########################
+# Parameters
+########################
+
+Parameters:
+
+  ImageId:
+    Type: String
+    Description: Image ID
+    Default: ami-000000000000
+  IamInstanceProfile:
+    Type: String
+    Description: IAM instance profile
+  InstanceType:
+    Type: String
+    Description: Instance type
+    Default: t3.small
+  AppSubnet:
+    Type: String
+    Description: Subnet for instance
+  ASGSecurityGroupList:
+    Type: String
+    Description: List of security groups for ASG
+  ScalingCreateTimeOut:
+    Type: String
+    Description: The length of time that AWS CloudFormation waits for the number of signals that was specified in the Count property.
+    Default: "PT5M"
+  ScalingUpdateTimeOut:
+    Type: String
+    Description: The amount of time that AWS CloudFormation pauses after making a change to a batch of instances
+    Default: "PT15M"
+  ScalingMin:
+    Type: String
+    Description: Minimum number of instances in ASG
+    Default: 3
+  ScalingTermination:
+    Type: Number
+    Description: The maximum amount of time, in seconds, that an instance can be in service.
+    Default: 86400
+  EC2ScaleUpCooldown:
+    Type: String
+    Description: Time for what policy waits before doing activities
+    Default: 60
+  EC2ScaleDownCooldown:
+    Type: String
+    Description: Time for what policy waits before doing activities
+    Default: 600
+  EC2ScaleUpAdjustment:
+    Type: Number
+    Description: Amount of instances which are launched while scaling up in percents
+    Default: 80
+  EC2ScaleDownAdjustment:
+    Type: Number
+    Description: Amount of instances which are terminated while scaling down in percents
+    Default: 20
+  HealthCheckGracePeriod:
+    Type: Number
+    Description: The amount of time, in seconds, that ASG waits before checking the health status of an EC2 instance that has come into service
+    Default: 30
+  HealthCheckType:
+    Type: String
+    Description: The service to use for the health checks
+    Default: EC2
+  ScalingNotificationTopic:
+    Type: String
+    Description: ARN of the SNS topic which is ised for notifications
+    Default: defaulttopicarn
+  DesiredCapacity:
+    Type: String
+    Description: Initial capacity of the Auto Scaling group at the time of its creation and the capacity it attempts to maintain
+    Default: 3
+  MinInstancesInService:
+    Type: Number
+    Description: Number of instances that must be in service within the ASG while AWS CloudFormation updates old instances
+    Default: 3
+  TerminatedInstances:
+    Type: String
+    Description: Termination policy for ASG
+    Default: OldestLaunchConfiguration
+  ScalingMax:
+    Type: String
+    Description: Maximum number of instances in ASG
+    Default: 36
+  NFSLocation:
+    Type: String
+    Description: NFS location
+    Default: nfs.example.com:/data
+  ClusterEndpoint:
+    Type: String
+    Description: Endpoint for redis cluster
+    Default: default-endpoint
+
+########################
+# Resources
+########################
+
+Resources:
+
+  AppAutoScalingGroup:
+      Type: AWS::AutoScaling::AutoScalingGroup
+      Properties:
+        DesiredCapacity: !Ref DesiredCapacity
+        HealthCheckGracePeriod: !Ref HealthCheckGracePeriod
+        HealthCheckType: !Ref HealthCheckType
+        LaunchConfigurationName: !Ref AppLaunchConfiguration
+        MaxSize: !Ref ScalingMax
+        MinSize: !Ref ScalingMin
+        MaxInstanceLifetime: !Ref ScalingTermination
+        TerminationPolicies:
+          - !Ref TerminatedInstances
+        VPCZoneIdentifier:
+          - !Ref AppSubnet
+        NotificationConfigurations:
+        - TopicARN:
+            Ref: ScalingNotificationTopic
+          NotificationTypes:
+          - autoscaling:EC2_INSTANCE_LAUNCH
+          - autoscaling:EC2_INSTANCE_LAUNCH_ERROR
+          - autoscaling:EC2_INSTANCE_TERMINATE
+          - autoscaling:EC2_INSTANCE_TERMINATE_ERROR
+        Tags:
+          - Key: Application
+            Value: App
+            PropagateAtLaunch: true
+      CreationPolicy:
+        ResourceSignal:
+          Count: !Ref ScalingMin
+          Timeout: !Ref ScalingCreateTimeOut
+      UpdatePolicy:
+        AutoScalingRollingUpdate:
+          MinInstancesInService: !Ref MinInstancesInService
+          PauseTime: !Ref ScalingUpdateTimeOut
+          SuspendProcesses:
+            - HealthCheck
+            - ReplaceUnhealthy
+            - AZRebalance
+            - AlarmNotification
+            - ScheduledActions
+
+  AppScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: PercentChangeInCapacity
+      AutoScalingGroupName:
+        Ref: AppAutoScalingGroup
+      Cooldown: !Ref EC2ScaleUpCooldown
+      ScalingAdjustment: !Ref EC2ScaleUpAdjustment
+
+  AppScaleDownPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: PercentChangeInCapacity
+      AutoScalingGroupName:
+        Ref: AppAutoScalingGroup
+      Cooldown: !Ref EC2ScaleDownCooldown
+      ScalingAdjustment: !Ref EC2ScaleDownAdjustment
+
+  AppCPUAlarmHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      EvaluationPeriods: '1'
+      Statistic: Average
+      Threshold: 30
+      Period: '60'
+      AlarmActions:
+        - Ref: AppScaleUpPolicy
+      Namespace: CWAgent
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value:
+            Ref: AppAutoScalingGroup
+      ComparisonOperator: GreaterThanThreshold
+      MetricName: cpu_usage_active
+
+  AppCPUAlarmLow:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      EvaluationPeriods: '5'
+      Statistic: Average
+      Threshold: 20
+      Period: '60'
+      AlarmActions:
+        - Ref: AppScaleDownPolicy
+      Namespace: CWAgent
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value:
+            Ref: AppAutoScalingGroup
+      ComparisonOperator: LessThanThreshold
+      MetricName: cpu_usage_active
+
+  AppLaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      BlockDeviceMappings:
+      - DeviceName: /dev/xvda
+        Ebs:
+          DeleteOnTermination: true
+          VolumeSize: 24
+          VolumeType: standard
+      ImageId: !Ref ImageId
+      IamInstanceProfile: !Ref IamInstanceProfile
+      InstanceType: !Ref InstanceType
+      SecurityGroups:
+        - !Ref ASGSecurityGroupList
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -x
+          /opt/aws/bin/cfn-init -s ${AWS::StackName} -r AppLaunchConfiguration -c customize --region ${AWS::Region} -v
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource AppAutoScalingGroup --region ${AWS::Region}
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          customize:
+            - configure
+        configure:
+          files:
+            /etc/environment:
+              content: !Sub |
+               NFS_LOCATION=${NFSLocation}
+              mode: '000644'
+              owner: root
+              group: root
+          commands:
+            customize:
+              command: /usr/local/sbin/customize
+              env:
+                CLUSTER_ENDPOINT: !Ref ClusterEndpoint
